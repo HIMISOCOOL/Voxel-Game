@@ -1,10 +1,14 @@
-use bevy::prelude::*;
+use bevy::{prelude::*, utils::HashMap};
 use rand::random;
 
+use crate::game::SimulationState;
+
 use super::{
-    components::{Block, Chunk, Coordinate},
-    CHUNK_DEPTH_IN_BLOCKS, CHUNK_HEIGHT_IN_BLOCKS, CHUNK_WIDTH_IN_BLOCKS, WORLD_DEPTH_IN_CHUNKS,
-    WORLD_HEIGHT_IN_CHUNKS, WORLD_WIDTH_IN_CHUNKS,
+    components,
+    resources::{self, CubeMesh},
+    CHUNK_DEPTH_IN_BLOCKS, CHUNK_HEIGHT_IN_BLOCKS, CHUNK_WIDTH_IN_BLOCKS, FACE_MASK_BACK,
+    FACE_MASK_BOTTOM, FACE_MASK_DEFAULT, FACE_MASK_FRONT, FACE_MASK_LEFT, FACE_MASK_RIGHT,
+    FACE_MASK_TOP, WORLD_DEPTH_IN_CHUNKS, WORLD_HEIGHT_IN_CHUNKS, WORLD_WIDTH_IN_CHUNKS,
 };
 
 pub fn spawn_light(mut commands: Commands) {
@@ -24,76 +28,209 @@ pub fn spawn_light(mut commands: Commands) {
     commands.spawn(light);
 }
 
-// pub fn spawn_floor(
-//     mut commands: Commands,
-//     mut meshes: ResMut<Assets<Mesh>>,
-//     mut materials: ResMut<Assets<StandardMaterial>>,
-// ) {
-//     let floor = (
-//         PbrBundle {
-//             mesh: meshes.add(Mesh::from(shape::Plane::from_size(25.0))),
-//             material: materials.add(Color::DARK_GREEN.into()),
-//             ..default()
-//         },
-//         Name::new("Floor"),
-//     );
+type VoxelBundle = (
+    components::ChunkCoordinate,
+    components::Voxel,
+    components::WorldCoordinate,
+    Name,
+);
 
-//     commands.spawn(floor);
-// }
+pub fn spawn_world(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    // takes an chunk position in chunk space and creates blocks inside it
+    let spawn_chunk = |chunk_x: u16, chunk_y: u16, chunk_z: u16| -> Vec<VoxelBundle> {
+        let mut blocks: Vec<VoxelBundle> = vec![];
+        for x in 0..CHUNK_WIDTH_IN_BLOCKS {
+            for y in 0..CHUNK_DEPTH_IN_BLOCKS {
+                for z in 0..CHUNK_HEIGHT_IN_BLOCKS {
+                    // figure out the transform for the block
+                    let voxel_world_position = Vec3::new(
+                        f32::from(x + (chunk_x * CHUNK_WIDTH_IN_BLOCKS)) * 0.1,
+                        f32::from(y + (chunk_y * CHUNK_DEPTH_IN_BLOCKS)) * 0.1,
+                        f32::from(z + (chunk_z * CHUNK_HEIGHT_IN_BLOCKS)) * 0.1,
+                    );
+                    // create a nice name for bevy inspector
+                    let name = format!("Block ({x}, {y}, {z})");
+                    // randomly make the block solid
+                    // TODO use perlin nosie?
+                    let is_solid = random::<bool>();
 
-pub fn spawn_world(mut commands: Commands) {
-    // let mesh_handle = meshes.add(Mesh::from(shape::Cube::new(0.1)));
-    // let material_handle = materials.add(Color::SEA_GREEN.into());
-
-    // takes an chunk position in chunk space and creates block inside it
-    let spawn_chunk =
-        |chunk_x: u16, chunk_y: u16, chunk_z: u16| -> Vec<(Block, Coordinate, Name)> {
-            let mut blocks: Vec<(Block, Coordinate, Name)> = vec![];
-            for x in 0..CHUNK_WIDTH_IN_BLOCKS {
-                for y in 0..CHUNK_DEPTH_IN_BLOCKS {
-                    for z in 0..CHUNK_HEIGHT_IN_BLOCKS {
-                        // figure out the transform for the block
-                        let block_position = Vec3::new(
-                            f32::from(x + (chunk_x * CHUNK_WIDTH_IN_BLOCKS)) * 0.1,
-                            f32::from(y + (chunk_y * CHUNK_DEPTH_IN_BLOCKS)) * 0.1,
-                            f32::from(z + (chunk_z * CHUNK_HEIGHT_IN_BLOCKS)) * 0.1,
-                        );
-                        // create a nice name for bevy inspector
-                        let name = format!("Block ({x}, {y}, {z})");
-                        // randomly make the block solid
-                        // TODO use perlin nosie?
-                        let is_solid = random::<bool>();
-
-                        blocks.push((
-                            Block { solid: is_solid },
-                            Coordinate::from_vec3(block_position),
-                            Name::new(name),
-                        ));
-                    }
+                    blocks.push((
+                        components::ChunkCoordinate(x, y, z),
+                        components::Voxel {
+                            solid: is_solid,
+                            ..default()
+                        },
+                        components::WorldCoordinate::from_vec3(voxel_world_position),
+                        Name::new(name),
+                    ));
                 }
             }
-            blocks
-        };
+        }
+        blocks
+    };
+
+    let mut voxel_world = resources::VoxelWorld {
+        chunks: HashMap::new(),
+    };
 
     // for each chunk in
     for x in 0..WORLD_WIDTH_IN_CHUNKS {
         for y in 0..WORLD_DEPTH_IN_CHUNKS {
             for z in 0..WORLD_HEIGHT_IN_CHUNKS {
                 let name = format!("Chunk ({x}, {y}, {z})");
+
+                let mut blocks: HashMap<IVec3, Entity> = HashMap::new();
                 // spawn a chunk
-                commands
+                let chunk_id = commands
                     .spawn((
                         SpatialBundle::default(),
-                        Chunk { updated: true },
-                        Coordinate::from_xyz(x as f32, y as f32, z as f32),
+                        components::Chunk { updated: true },
+                        components::WorldCoordinate::from_xyz(x as f32, y as f32, z as f32),
                         Name::new(name),
                     ))
                     // and add children
                     .with_children(|parent| {
-                        for block in spawn_chunk(x, y, z) {
-                            parent.spawn(block);
+                        for (chunk_coordinate, voxel, world_coordinate, name) in
+                            spawn_chunk(x, y, z)
+                        {
+                            let block_id = parent
+                                .spawn((chunk_coordinate, voxel, world_coordinate, name))
+                                .id();
+                            blocks.insert(chunk_coordinate.into_ivec3(), block_id);
                         }
-                    });
+                    })
+                    .id();
+                voxel_world.chunks.insert(
+                    IVec3 {
+                        x: x.into(),
+                        y: y.into(),
+                        z: z.into(),
+                    },
+                    resources::Chunk {
+                        entity_id: chunk_id,
+                        blocks,
+                    },
+                );
+            }
+        }
+    }
+    commands.insert_resource(resources::CubeMesh {
+        mesh_handle: meshes.add(Mesh::from(shape::Cube::new(0.1))),
+        material_handle: materials.add(Color::SEA_GREEN.into()),
+        mesh_cache: HashMap::new(),
+    });
+    commands.insert_resource(voxel_world);
+}
+
+pub fn update_chunk(
+    voxel_world: Res<resources::VoxelWorld>,
+    chunk_query: Query<(&components::Chunk, &components::WorldCoordinate, &Children)>,
+    mut block_query: Query<(&components::ChunkCoordinate, &mut components::Voxel)>,
+) {
+    for (chunk, chunk_world_coordinate, children) in chunk_query.iter() {
+        if !chunk.updated {
+            continue;
+        }
+        // for each block
+        for block_entity in children.iter() {
+            if let Some(chunk_resource) = voxel_world
+                .chunks
+                .get(&chunk_world_coordinate.into_translation().as_ivec3())
+            {
+                if let Ok((block_chunk_coordinate, voxel)) = block_query.get(*block_entity) {
+                    if !voxel.solid {
+                        continue;
+                    }
+
+                    // find the adjacent blocks
+                    // build flags for each face
+                    let mut mask = FACE_MASK_DEFAULT;
+
+                    let IVec3 { x, y, z } = block_chunk_coordinate.into_ivec3();
+
+                    // if there is a block to the right
+                    if let Some(next_block_entity) =
+                        chunk_resource.blocks.get(&IVec3 { x: x + 1, y, z })
+                    {
+                        if let Ok((_, adjacent_voxel)) = block_query.get(*next_block_entity) {
+                            // but its not solid
+                            if !adjacent_voxel.solid {
+                                mask |= FACE_MASK_RIGHT;
+                            }
+                        }
+                    // otherwise theres no block
+                    } else {
+                        mask |= FACE_MASK_RIGHT;
+                    }
+                    // if there is a block to the left
+                    if let Some(prev_block_entity) =
+                        chunk_resource.blocks.get(&IVec3 { x: x - 1, y, z })
+                    {
+                        if let Ok((_, adjacent_voxel)) = block_query.get(*prev_block_entity) {
+                            // but its not solid
+                            if !adjacent_voxel.solid {
+                                mask |= FACE_MASK_LEFT;
+                            }
+                        }
+                    // otherwise theres no block
+                    } else {
+                        mask |= FACE_MASK_LEFT;
+                    }
+
+                    if let Some(prev_block_entity) =
+                        chunk_resource.blocks.get(&IVec3 { x, y: y + 1, z })
+                    {
+                        if let Ok((_, adjacent_voxel)) = block_query.get(*prev_block_entity) {
+                            if !adjacent_voxel.solid {
+                                mask |= FACE_MASK_TOP;
+                            }
+                        }
+                    } else {
+                        mask |= FACE_MASK_TOP;
+                    }
+                    if let Some(next_block_entity) =
+                        chunk_resource.blocks.get(&IVec3 { x, y: y - 1, z })
+                    {
+                        if let Ok((_, adjacent_voxel)) = block_query.get(*next_block_entity) {
+                            if !adjacent_voxel.solid {
+                                mask |= FACE_MASK_BOTTOM;
+                            }
+                        }
+                    } else {
+                        mask |= FACE_MASK_BOTTOM;
+                    }
+
+                    if let Some(prev_block_entity) =
+                        chunk_resource.blocks.get(&IVec3 { x, y, z: z + 1 })
+                    {
+                        if let Ok((_, adjacent_voxel)) = block_query.get(*prev_block_entity) {
+                            if !adjacent_voxel.solid {
+                                mask |= FACE_MASK_FRONT;
+                            }
+                        }
+                    } else {
+                        mask |= FACE_MASK_FRONT;
+                    }
+                    if let Some(next_block_entity) =
+                        chunk_resource.blocks.get(&IVec3 { x, y, z: z - 1 })
+                    {
+                        if let Ok((_, adjacent_voxel)) = block_query.get(*next_block_entity) {
+                            if !adjacent_voxel.solid {
+                                mask |= FACE_MASK_BACK;
+                            }
+                        }
+                    } else {
+                        mask |= FACE_MASK_BACK;
+                    }
+
+                    if let Ok((_, mut voxel)) = block_query.get_mut(*block_entity) {
+                        voxel.mask = mask;
+                    }
+                }
             }
         }
     }
@@ -102,33 +239,42 @@ pub fn spawn_world(mut commands: Commands) {
 pub fn mesh_chunk(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut chunk_query: Query<(&mut Chunk, &Children)>,
-    block_query: Query<(&Coordinate, &Block), With<Block>>,
+    mut cube_mesh: ResMut<CubeMesh>,
+    // mut materials: ResMut<Assets<StandardMaterial>>,
+    mut chunk_query: Query<(&mut components::Chunk, &Children)>,
+    voxel_query: Query<(&components::WorldCoordinate, &components::Voxel)>,
 ) {
     // TODO make real mesh
-    let mesh_handle = meshes.add(Mesh::from(shape::Cube::new(0.1)));
+    // let mesh_handle = meshes.add(Mesh::from(shape::Cube::new(0.1)));
     // TODO reuse material
-    let material_handle = materials.add(Color::SEA_GREEN.into());
+    // let material_handle = materials.add(Color::SEA_GREEN.into());
     // for each chunk
     for (mut chunk, children) in chunk_query.iter_mut() {
         if !chunk.updated {
-            return;
+            continue;
         }
-        for block_entity in children.iter() {
-            if let Ok((coordinate, block)) = block_query.get(*block_entity) {
-                if block.solid {
+        // for each voxel in the chunk
+        for entity in children.iter() {
+            // get the voxel from the ecs
+            if let Ok((world_coordinate, voxel)) = voxel_query.get(*entity) {
+                if voxel.solid || voxel.mask != FACE_MASK_DEFAULT {
                     // add an updated mesh
-                    // TODO remove the old mesh
-                    commands.entity(*block_entity).insert(PbrBundle {
-                        mesh: mesh_handle.clone(),
-                        transform: coordinate.into_transform(),
-                        material: material_handle.clone(),
+                    // TODO remove the old mesh?
+                    if !cube_mesh.mesh_cache.contains_key(&voxel.mask) {
+                        cube_mesh.mesh_cache.insert(voxel.mask, meshes.add(Mesh::from(voxel)));
+                    }
+                    let mesh = cube_mesh.mesh_cache.get(&voxel.mask).unwrap().clone();
+                    let material = cube_mesh.material_handle.clone();
+                    commands.entity(*entity).insert(PbrBundle {
+                        mesh,
+                        transform: world_coordinate.into_transform(),
+                        material,
                         ..default()
                     });
                 }
             }
         }
+        // chunk has now been updated
         chunk.updated = false;
     }
 }
