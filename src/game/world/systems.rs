@@ -5,7 +5,7 @@ use crate::game::SimulationState;
 
 use super::{
     components,
-    resources::{self, CubeMesh},
+    resources::{self, CubeMesh, VoxelWorld},
     CHUNK_DEPTH_IN_BLOCKS, CHUNK_HEIGHT_IN_BLOCKS, CHUNK_WIDTH_IN_BLOCKS, FACE_MASK_BACK,
     FACE_MASK_BOTTOM, FACE_MASK_DEFAULT, FACE_MASK_FRONT, FACE_MASK_LEFT, FACE_MASK_RIGHT,
     FACE_MASK_TOP, WORLD_DEPTH_IN_CHUNKS, WORLD_HEIGHT_IN_CHUNKS, WORLD_WIDTH_IN_CHUNKS,
@@ -75,6 +75,7 @@ pub fn spawn_world(
 
     let mut voxel_world = resources::VoxelWorld {
         chunks: HashMap::new(),
+        mesh_cache: HashMap::new(),
     };
 
     // for each chunk in
@@ -121,7 +122,6 @@ pub fn spawn_world(
     commands.insert_resource(resources::CubeMesh {
         mesh_handle: meshes.add(Mesh::from(shape::Cube::new(0.1))),
         material_handle: materials.add(Color::SEA_GREEN.into()),
-        mesh_cache: HashMap::new(),
     });
     commands.insert_resource(voxel_world);
 }
@@ -130,7 +130,11 @@ pub fn update_chunk(
     voxel_world: Res<resources::VoxelWorld>,
     chunk_query: Query<(&components::Chunk, &components::WorldCoordinate, &Children)>,
     mut block_query: Query<(&components::ChunkCoordinate, &mut components::Voxel)>,
+    simulation_state: Res<State<SimulationState>>,
 ) {
+    if *simulation_state.get() == SimulationState::Paused {
+        return;
+    }
     for (chunk, chunk_world_coordinate, children) in chunk_query.iter() {
         if !chunk.updated {
             continue;
@@ -239,18 +243,23 @@ pub fn update_chunk(
 pub fn mesh_chunk(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut cube_mesh: ResMut<CubeMesh>,
+    cube_mesh: Res<CubeMesh>,
     // mut materials: ResMut<Assets<StandardMaterial>>,
+    mut voxel_world: ResMut<VoxelWorld>,
     mut chunk_query: Query<(&mut components::Chunk, &Children)>,
     voxel_query: Query<(&components::WorldCoordinate, &components::Voxel)>,
+    simulation_state: Res<State<SimulationState>>,
 ) {
-    // TODO make real mesh
-    // let mesh_handle = meshes.add(Mesh::from(shape::Cube::new(0.1)));
+    if *simulation_state.get() == SimulationState::Paused {
+        return;
+    }
     // TODO reuse material
     // let material_handle = materials.add(Color::SEA_GREEN.into());
     // for each chunk
     for (mut chunk, children) in chunk_query.iter_mut() {
+        // if the chunk was not updated
         if !chunk.updated {
+            // skip this loop
             continue;
         }
         // for each voxel in the chunk
@@ -260,10 +269,12 @@ pub fn mesh_chunk(
                 if voxel.solid || voxel.mask != FACE_MASK_DEFAULT {
                     // add an updated mesh
                     // TODO remove the old mesh?
-                    if !cube_mesh.mesh_cache.contains_key(&voxel.mask) {
-                        cube_mesh.mesh_cache.insert(voxel.mask, meshes.add(Mesh::from(voxel)));
+                    if !voxel_world.mesh_cache.contains_key(&voxel.mask) {
+                        voxel_world
+                            .mesh_cache
+                            .insert(voxel.mask, meshes.add(Mesh::from(voxel)));
                     }
-                    let mesh = cube_mesh.mesh_cache.get(&voxel.mask).unwrap().clone();
+                    let mesh = voxel_world.mesh_cache.get(&voxel.mask).unwrap().clone();
                     let material = cube_mesh.material_handle.clone();
                     commands.entity(*entity).insert(PbrBundle {
                         mesh,

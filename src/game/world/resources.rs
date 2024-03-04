@@ -8,11 +8,11 @@ pub struct Chunk {
 #[derive(Resource)]
 pub struct VoxelWorld {
     pub chunks: HashMap<IVec3, Chunk>,
+    pub mesh_cache: HashMap<u8, Handle<Mesh>>,
 }
 
 #[derive(Resource)]
 pub struct CubeMesh {
     pub mesh_handle: Handle<Mesh>,
-    pub mesh_cache: HashMap<u8, Handle<Mesh>>,
     pub material_handle: Handle<StandardMaterial>,
 }
